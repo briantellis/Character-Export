@@ -30,7 +30,7 @@ Kill counts, personal bests and pets come from RuneLite's built-in Chat Commands
 Files are written under the RuneLite directory, one folder per account:
 
 ```
-.runelite/osrs-intelligence/<Character Name>/
+.runelite/plugin-data/osrs-intelligence/<Character Name>/
 ```
 
 ## Sync
@@ -66,7 +66,7 @@ A server that wants to receive data implements these routes. Each takes and retu
 
 ## Debug logging
 
-Turn on **Debug logging** to also write `exporter.log`, `status.json` and `recent_events.json` to `.runelite/osrs-intelligence/`. It takes effect immediately.
+Turn on **Debug logging** to also write `exporter.log`, `status.json` and `recent_events.json` to `.runelite/plugin-data/osrs-intelligence/`. It takes effect immediately.
 
 ## Safety
 

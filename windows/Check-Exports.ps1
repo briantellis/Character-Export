@@ -2,7 +2,7 @@
 # Lists the current contents of the osrs-intelligence output directory.
 # Run this to verify export files are being written after a dev session.
 
-$exportDir = "$env:USERPROFILE\.runelite\osrs-intelligence"
+$exportDir = "$env:USERPROFILE\.runelite\plugin-data\osrs-intelligence"
 
 if (-not (Test-Path $exportDir))
 {

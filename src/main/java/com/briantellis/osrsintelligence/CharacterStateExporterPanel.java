@@ -29,10 +29,9 @@ import java.awt.BorderLayout;
 import java.awt.Color;
 import java.awt.Dimension;
 import java.io.IOException;
+import net.runelite.client.util.Filepath;
 import java.awt.Toolkit;
 import java.awt.datatransfer.StringSelection;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
@@ -119,7 +118,7 @@ class CharacterStateExporterPanel extends PluginPanel
     private final Map<String, String> datasetFiles = new LinkedHashMap<>();
     private final JLabel directoryLabel;
     private final JLabel accountLabel;
-    private volatile Path currentOutputDir;
+    private volatile Filepath currentOutputDir;
     private final Object manualSyncLock = new Object();
     private boolean manualSyncInProgress;
     private final Map<String, SyncOutcome> manualSyncOutcomes = new LinkedHashMap<>();
@@ -248,7 +247,7 @@ class CharacterStateExporterPanel extends PluginPanel
         dirTitle.setForeground(ColorScheme.LIGHT_GRAY_COLOR);
         dirPanel.add(dirTitle, BorderLayout.NORTH);
 
-        directoryLabel = new JLabel("osrs-intelligence/");
+        directoryLabel = new JLabel("plugin-data/osrs-intelligence/");
         directoryLabel.setHorizontalAlignment(JLabel.CENTER);
         directoryLabel.setForeground(Color.WHITE);
         directoryLabel.setBorder(new EmptyBorder(4, 0, 0, 0));
@@ -291,14 +290,14 @@ class CharacterStateExporterPanel extends PluginPanel
         add(notesPanel);
     }
 
-    void setAccount(String playerName, Path outputDir)
+    void setAccount(String playerName, Filepath outputDir)
     {
         currentOutputDir = outputDir;
         SwingUtilities.invokeLater(() ->
         {
             accountLabel.setText(playerName);
             accountLabel.setForeground(Color.WHITE);
-            directoryLabel.setText("osrs-intelligence/" + playerName + "/");
+            directoryLabel.setText("plugin-data/osrs-intelligence/" + playerName + "/");
             for (int i = 0; i < DATASET_KEYS.length; i++)
             {
                 StatusRow row = statusRows.get(DATASET_KEYS[i]);
@@ -334,7 +333,7 @@ class CharacterStateExporterPanel extends PluginPanel
         {
             accountLabel.setText("Not logged in");
             accountLabel.setForeground(ColorScheme.LIGHT_GRAY_COLOR);
-            directoryLabel.setText("osrs-intelligence/");
+            directoryLabel.setText("plugin-data/osrs-intelligence/");
             synchronized (manualSyncLock)
             {
                 manualSyncInProgress = false;
@@ -436,9 +435,9 @@ class CharacterStateExporterPanel extends PluginPanel
         recordManualOutcome(datasetKey, SyncOutcome.FAILED);
     }
 
-    void restoreFromDisk(Path accountDir)
+    void restoreFromDisk(Filepath accountDir)
     {
-        if (accountDir == null || !Files.isDirectory(accountDir))
+        if (accountDir == null || !accountDir.isDirectory())
         {
             return;
         }
@@ -447,15 +446,15 @@ class CharacterStateExporterPanel extends PluginPanel
         {
             for (int i = 0; i < DATASET_KEYS.length; i++)
             {
-                Path file = accountDir.resolve(DATASET_FILES[i]);
-                if (!Files.exists(file))
+                Filepath file = accountDir.joinSegment(DATASET_FILES[i]);
+                if (!file.exists())
                 {
                     continue;
                 }
 
                 try
                 {
-                    Instant modified = Files.getLastModifiedTime(file).toInstant();
+                    Instant modified = file.getLastModifiedTime().toInstant();
                     String exportedAt = formatStatusTime(modified);
                     String tooltip = formatStatusTooltip(modified, "Saved");
 
@@ -497,9 +496,9 @@ class CharacterStateExporterPanel extends PluginPanel
 
     private boolean hasExistingDatasetFile(String datasetKey)
     {
-        Path dir = currentOutputDir;
+        Filepath dir = currentOutputDir;
         String fileName = datasetFiles.get(datasetKey);
-        return dir != null && fileName != null && Files.isRegularFile(dir.resolve(fileName));
+        return dir != null && fileName != null && dir.joinSegment(fileName).isFile();
     }
 
     private void recordManualOutcome(String datasetKey, SyncOutcome outcome)
@@ -533,7 +532,7 @@ class CharacterStateExporterPanel extends PluginPanel
 
     private void copyOutputFolder(JButton button)
     {
-        Path dir = currentOutputDir;
+        Filepath dir = currentOutputDir;
         if (dir == null)
         {
             return;

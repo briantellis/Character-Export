@@ -38,11 +38,10 @@ import java.awt.Graphics2D;
 import java.awt.RenderingHints;
 import java.awt.image.BufferedImage;
 import java.io.IOException;
-import java.io.InputStream;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import com.google.common.io.CharStreams;
+import net.runelite.client.util.Filepath;
+import net.runelite.client.util.ImageUtil;
 import java.time.OffsetDateTime;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -59,7 +58,6 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
-import javax.imageio.ImageIO;
 import javax.inject.Inject;
 import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.Client;
@@ -90,7 +88,6 @@ import net.runelite.api.events.VarbitChanged;
 import net.runelite.api.events.WidgetLoaded;
 import net.runelite.api.gameval.InventoryID;
 import net.runelite.api.widgets.Widget;
-import net.runelite.client.RuneLite;
 import net.runelite.client.callback.ClientThread;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.events.ConfigChanged;
@@ -106,14 +103,14 @@ import net.runelite.client.ui.NavigationButton;
 @Slf4j
 @PluginDescriptor(
     name = "OSRS Intelligence",
+    internalName = "osrs-intelligence",
+    legacyDataDirectory = "osrs-intelligence",
     description = "Saves your character as local JSON files and, if you link it, syncs them to an HTTPS server you choose.",
     tags = {"export", "sync", "planner", "data", "bank", "quests", "stats", "diary", "combat", "collection", "slayer", "ironman"}
 )
 public class CharacterStateExporterPlugin extends Plugin
 {
     private static final String PLUGIN_VERSION = "1.0.0";
-    private static final Path RUNELITE_DIR = RuneLite.RUNELITE_DIR.toPath().toAbsolutePath().normalize();
-    private static final Path BASE_OUTPUT_DIR = RUNELITE_DIR.resolve("osrs-intelligence").normalize();
     // Initialised in startUp() from the injected Gson to satisfy plugin-hub rules.
     private Gson prettyGson;
 
@@ -460,7 +457,9 @@ public class CharacterStateExporterPlugin extends Plugin
     private volatile boolean pendingInitialCharacterExport;
     private volatile boolean grandExchangeChanged;
     private volatile boolean writesEnabled;
-    private volatile Path accountOutputDir;
+    // RuneLite's data folder for this plugin, .runelite/plugin-data/osrs-intelligence; nothing is written outside it.
+    private volatile Filepath baseOutputDir;
+    private volatile Filepath accountOutputDir;
     private volatile String currentAccountName;
     private CharacterStateExporterPanel panel;
     private NavigationButton navButton;
@@ -882,21 +881,21 @@ public class CharacterStateExporterPlugin extends Plugin
         }
 
         currentAccountName = name;
-        Path dir = BASE_OUTPUT_DIR.resolve(name).normalize();
-
-        if (!dir.startsWith(BASE_OUTPUT_DIR))
+        Filepath base = baseOutputDir;
+        if (base == null)
         {
-            log.warn("Character State Exporter: account directory escapes base dir: {}", dir);
             return;
         }
 
+        Filepath dir;
         try
         {
-            Files.createDirectories(dir);
+            dir = base.joinSegment(name);
+            dir.createDirectories();
         }
-        catch (IOException ex)
+        catch (IOException | IllegalArgumentException ex)
         {
-            log.warn("Character State Exporter: could not create account directory {}", dir, ex);
+            log.warn("OSRS Intelligence could not create the folder for {}", name, ex);
             return;
         }
 
@@ -1880,21 +1879,25 @@ public class CharacterStateExporterPlugin extends Plugin
 
     private void restoreCollectionLogCache()
     {
-        Path dir = accountOutputDir;
+        Filepath dir = accountOutputDir;
         if (dir == null)
         {
             return;
         }
 
-        Path file = dir.resolve(COLLECTION_LOG_FILE);
-        if (!Files.isRegularFile(file))
+        Filepath file = dir.joinSegment(COLLECTION_LOG_FILE);
+        if (!file.isFile())
         {
             return;
         }
 
         try
         {
-            String content = new String(Files.readAllBytes(file), StandardCharsets.UTF_8);
+            String content;
+            try (java.io.Reader reader = file.openReader())
+            {
+                content = CharStreams.toString(reader);
+            }
             @SuppressWarnings("unchecked")
             Map<String, Object> saved = gson.fromJson(content, Map.class);
             if (saved == null)
@@ -2517,7 +2520,7 @@ public class CharacterStateExporterPlugin extends Plugin
 
     private void writeJson(String datasetKey, String fileName, Map<String, Object> payload)
     {
-        Path outputDir = accountOutputDir;
+        Filepath outputDir = accountOutputDir;
         if (!writesEnabled || outputDir == null)
         {
             updateDatasetStatus(datasetKey, "error", "writes_disabled", ImmutableMap.of("file", fileName));
@@ -2534,7 +2537,7 @@ public class CharacterStateExporterPlugin extends Plugin
             return;
         }
 
-        Path outputPath = outputDir.resolve(fileName);
+        Filepath outputPath = outputDir.joinSegment(fileName);
         boolean manualRequest = isManualPanelRequest(payload);
         submitWriter(() ->
         {
@@ -2708,7 +2711,12 @@ public class CharacterStateExporterPlugin extends Plugin
 
     private void resetExporterLogSync()
     {
-        Path outputPath = BASE_OUTPUT_DIR.resolve(EXPORTER_LOG_FILE);
+        Filepath base = baseOutputDir;
+        if (base == null)
+        {
+            return;
+        }
+        Filepath outputPath = base.joinSegment(EXPORTER_LOG_FILE);
         try
         {
             writeTextFileSync(outputPath, "");
@@ -2722,28 +2730,20 @@ public class CharacterStateExporterPlugin extends Plugin
 
     private void appendExporterLogSync(String serializedLine)
     {
-        Path outputPath = BASE_OUTPUT_DIR.resolve(EXPORTER_LOG_FILE);
+        Filepath base = baseOutputDir;
+        if (base == null)
+        {
+            return;
+        }
+        Filepath outputPath = base.joinSegment(EXPORTER_LOG_FILE);
         try
         {
-            Files.createDirectories(outputPath.getParent());
-            if (Files.exists(outputPath) && Files.size(outputPath) >= EXPORTER_LOG_MAX_BYTES)
+            if (outputPath.exists() && outputPath.size() >= EXPORTER_LOG_MAX_BYTES)
             {
-                Files.write(
-                    outputPath,
-                    new byte[0],
-                    StandardOpenOption.CREATE,
-                    StandardOpenOption.TRUNCATE_EXISTING,
-                    StandardOpenOption.WRITE
-                );
+                writeTextFileSync(outputPath, "");
             }
 
-            Files.write(
-                outputPath,
-                (serializedLine + System.lineSeparator()).getBytes(StandardCharsets.UTF_8),
-                StandardOpenOption.CREATE,
-                StandardOpenOption.APPEND,
-                StandardOpenOption.WRITE
-            );
+            outputPath.write(serializedLine + System.lineSeparator(), StandardOpenOption.CREATE, StandardOpenOption.APPEND, StandardOpenOption.WRITE);
             warnedFailureKeys.remove("log:" + EXPORTER_LOG_FILE);
         }
         catch (IOException ex)
@@ -2816,7 +2816,12 @@ public class CharacterStateExporterPlugin extends Plugin
 
     private void writeAuxJsonSync(String fileName, String json)
     {
-        Path outputPath = BASE_OUTPUT_DIR.resolve(fileName);
+        Filepath base = baseOutputDir;
+        if (base == null)
+        {
+            return;
+        }
+        Filepath outputPath = base.joinSegment(fileName);
         try
         {
             writeTextFileSync(outputPath, json + System.lineSeparator());
@@ -2828,16 +2833,10 @@ public class CharacterStateExporterPlugin extends Plugin
         }
     }
 
-    private void writeTextFileSync(Path outputPath, String content) throws IOException
+    private void writeTextFileSync(Filepath outputPath, String content) throws IOException
     {
-        Files.createDirectories(outputPath.getParent());
-        Files.write(
-            outputPath,
-            content.getBytes(StandardCharsets.UTF_8),
-            StandardOpenOption.CREATE,
-            StandardOpenOption.TRUNCATE_EXISTING,
-            StandardOpenOption.WRITE
-        );
+        outputPath.getParent().createDirectories();
+        outputPath.write(content, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
     }
 
     private void submitWriter(Runnable task)
@@ -2916,20 +2915,16 @@ public class CharacterStateExporterPlugin extends Plugin
 
     private boolean initializeBaseOutputDirectory()
     {
-        if (!BASE_OUTPUT_DIR.startsWith(RUNELITE_DIR))
-        {
-            log.warn("Character State Exporter output directory escapes RuneLite dir: {}", BASE_OUTPUT_DIR);
-            return false;
-        }
-
         try
         {
-            Files.createDirectories(BASE_OUTPUT_DIR);
+            Filepath base = getPluginDirectory();
+            base.createDirectories();
+            baseOutputDir = base;
             return true;
         }
-        catch (IOException ex)
+        catch (IOException | IllegalArgumentException ex)
         {
-            log.warn("Character State Exporter could not create output directory {}", BASE_OUTPUT_DIR, ex);
+            log.warn("OSRS Intelligence could not create its data folder", ex);
             return false;
         }
     }
@@ -3000,29 +2995,11 @@ public class CharacterStateExporterPlugin extends Plugin
 
     private static BufferedImage loadSidebarIconResource()
     {
-        try (InputStream stream = CharacterStateExporterPlugin.class.getResourceAsStream("sidebar_icon.png"))
+        try
         {
-            if (stream == null)
-            {
-                return null;
-            }
-
-            BufferedImage source = ImageIO.read(stream);
-            if (source == null)
-            {
-                return null;
-            }
-
-            BufferedImage scaled = new BufferedImage(16, 16, BufferedImage.TYPE_INT_ARGB);
-            Graphics2D g = scaled.createGraphics();
-            g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC);
-            g.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY);
-            g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
-            g.drawImage(source, 0, 0, 16, 16, null);
-            g.dispose();
-            return scaled;
+            return ImageUtil.resizeImage(ImageUtil.loadImageResource(CharacterStateExporterPlugin.class, "sidebar_icon.png"), 16, 16);
         }
-        catch (IOException ex)
+        catch (RuntimeException ex)
         {
             return null;
         }

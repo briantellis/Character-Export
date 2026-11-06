@@ -6,11 +6,11 @@
 #   \\wsl$\Ubuntu\home\<you>\dzwnk-rune\tools\character-export\windows\Run-Dev.ps1
 #
 # Output log:
-#   %USERPROFILE%\.runelite\osrs-intelligence\dev-harness.log
+#   %USERPROFILE%\.runelite\plugin-data\osrs-intelligence\dev-harness.log
 
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $buildDir    = "C:\Users\Public\character-export"
-$logFile     = "$env:USERPROFILE\.runelite\osrs-intelligence\dev-harness.log"
+$logFile     = "$env:USERPROFILE\.runelite\plugin-data\osrs-intelligence\dev-harness.log"
 
 Write-Host "==> Mirroring source to $buildDir"
 New-Item -ItemType Directory -Force -Path $buildDir | Out-Null
