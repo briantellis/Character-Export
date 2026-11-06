@@ -1,4 +1,4 @@
-package com.dzwnk.exporter;
+package com.briantellis.osrsintelligence;
 
 import java.time.Instant;
 import java.time.LocalDate;
@@ -11,6 +11,13 @@ import org.junit.Test;
 
 public class CharacterExportRegressionTest
 {
+    @Test
+    public void tradeTimesReadBothFormatsRuneLiteHasWritten()
+    {
+        Assert.assertEquals("2026-11-06T19:00:00Z", CharacterStateExporterPlugin.tradeTime(new com.google.gson.JsonPrimitive(1793991600000L)));
+        Assert.assertEquals("2026-11-06T19:00:00Z", CharacterStateExporterPlugin.tradeTime(new com.google.gson.Gson().fromJson("{\"seconds\":1793991600,\"nanos\":0}", com.google.gson.JsonElement.class)));
+    }
+
     @Test
     public void combatAchievementCompletionUsesInternalTaskIdRatherThanSortPosition()
     {

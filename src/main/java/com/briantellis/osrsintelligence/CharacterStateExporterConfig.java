@@ -23,13 +23,13 @@
  * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
  * POSSIBILITY OF SUCH DAMAGE.
  */
-package com.dzwnk.exporter;
+package com.briantellis.osrsintelligence;
 
 import net.runelite.client.config.Config;
 import net.runelite.client.config.ConfigGroup;
 import net.runelite.client.config.ConfigItem;
 
-@ConfigGroup("characterStateExporter")
+@ConfigGroup("osrsIntelligence")
 public interface CharacterStateExporterConfig extends Config
 {
     @ConfigItem(
@@ -120,6 +120,56 @@ public interface CharacterStateExporterConfig extends Config
     default boolean exportCollectionLog()
     {
         return true;
+    }
+
+    @ConfigItem(
+        keyName = "exportAccount",
+        name = "Export account details",
+        description = "Write quest points, point balances, your Slayer task, kill counts and personal bests, pets, prayer unlocks, daily claims, rune pouch and collection log totals"
+    )
+    default boolean exportAccount()
+    {
+        return true;
+    }
+
+    @ConfigItem(
+        keyName = "exportLootingBag",
+        name = "Export looting bag",
+        description = "Write looting bag contents after you check the bag"
+    )
+    default boolean exportLootingBag()
+    {
+        return true;
+    }
+
+    @ConfigItem(
+        keyName = "exportGrandExchange",
+        name = "Export Grand Exchange",
+        description = "Write your Grand Exchange offers, and the completed trades RuneLite's Grand Exchange plugin has logged for this account (up to a year)"
+    )
+    default boolean exportGrandExchange()
+    {
+        return true;
+    }
+
+    @ConfigItem(
+        keyName = "syncEnabled",
+        name = "Sync to a server",
+        description = "Off by default. When on and linked, sends every export turned on above to the server below. Item files go at most every five minutes; everything else at most once a minute"
+    )
+    default boolean syncEnabled()
+    {
+        return false;
+    }
+
+    @ConfigItem(
+        keyName = "syncEndpoint",
+        name = "Sync server",
+        description = "The HTTPS address of the server to send your data to. It receives everything listed above, so only use one you trust"
+    )
+    default String syncEndpoint()
+    {
+        return "";
     }
 
     @ConfigItem(

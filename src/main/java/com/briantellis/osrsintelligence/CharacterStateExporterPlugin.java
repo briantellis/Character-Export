@@ -23,12 +23,15 @@
  * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
  * POSSIBILITY OF SUCH DAMAGE.
  */
-package com.dzwnk.exporter;
+package com.briantellis.osrsintelligence;
 
 import com.google.common.collect.ImmutableMap;
 import com.google.common.util.concurrent.ThreadFactoryBuilder;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
 import com.google.inject.Provides;
 import java.awt.Color;
 import java.awt.Graphics2D;
@@ -44,6 +47,7 @@ import java.time.OffsetDateTime;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.Deque;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -59,6 +63,13 @@ import javax.imageio.ImageIO;
 import javax.inject.Inject;
 import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.Client;
+import net.runelite.api.gameval.VarbitID;
+import net.runelite.api.gameval.VarPlayerID;
+import net.runelite.api.gameval.DBTableID;
+import net.runelite.api.EnumID;
+import net.runelite.api.GrandExchangeOffer;
+import net.runelite.api.GrandExchangeOfferState;
+import net.runelite.api.events.GrandExchangeOfferChanged;
 import net.runelite.api.GameState;
 import net.runelite.api.Item;
 import net.runelite.api.ItemComposition;
@@ -82,6 +93,9 @@ import net.runelite.api.widgets.Widget;
 import net.runelite.client.RuneLite;
 import net.runelite.client.callback.ClientThread;
 import net.runelite.client.config.ConfigManager;
+import net.runelite.client.events.ConfigChanged;
+import net.runelite.client.util.LinkBrowser;
+import okhttp3.OkHttpClient;
 import net.runelite.client.eventbus.Subscribe;
 import net.runelite.client.game.ItemManager;
 import net.runelite.client.plugins.Plugin;
@@ -91,15 +105,15 @@ import net.runelite.client.ui.NavigationButton;
 
 @Slf4j
 @PluginDescriptor(
-    name = "Character Export",
-    description = "Saves stats, quests, diaries, combat achievements, bank, inventory, equipment, and collection log as local JSON files in .runelite/character-exporter/.",
-    tags = {"export", "data", "bank", "quests", "stats", "seed", "inventory", "equipment", "diary", "combat", "collection", "log"}
+    name = "OSRS Intelligence",
+    description = "Saves your character as local JSON files and, if you link it, syncs them to an HTTPS server you choose.",
+    tags = {"export", "sync", "planner", "data", "bank", "quests", "stats", "diary", "combat", "collection", "slayer", "ironman"}
 )
 public class CharacterStateExporterPlugin extends Plugin
 {
-    private static final String PLUGIN_VERSION = "0.6.0";
+    private static final String PLUGIN_VERSION = "1.0.0";
     private static final Path RUNELITE_DIR = RuneLite.RUNELITE_DIR.toPath().toAbsolutePath().normalize();
-    private static final Path BASE_OUTPUT_DIR = RUNELITE_DIR.resolve("character-exporter").normalize();
+    private static final Path BASE_OUTPUT_DIR = RUNELITE_DIR.resolve("osrs-intelligence").normalize();
     // Initialised in startUp() from the injected Gson to satisfy plugin-hub rules.
     private Gson prettyGson;
 
@@ -108,6 +122,8 @@ public class CharacterStateExporterPlugin extends Plugin
     private static final String DIARIES_FILE = "diaries.json";
     private static final String COMBAT_ACHIEVEMENTS_FILE = "combat_achievements.json";
     private static final String COLLECTION_LOG_FILE = "collection_log.json";
+    private static final String ACCOUNT_FILE = "account.json";
+    private static final String GRAND_EXCHANGE_FILE = "grand_exchange.json";
     private static final String STATUS_FILE = "status.json";
     private static final String RECENT_EVENTS_FILE = "recent_events.json";
     private static final String EXPORTER_LOG_FILE = "exporter.log";
@@ -119,6 +135,54 @@ public class CharacterStateExporterPlugin extends Plugin
     private static final long DIARY_EXPORT_INTERVAL_MS = 5000L;
     private static final long COMBAT_ACHIEVEMENT_EXPORT_INTERVAL_MS = 5000L;
     private static final long COLLECTION_LOG_EXPORT_INTERVAL_MS = 2000L;
+    private static final long ACCOUNT_EXPORT_INTERVAL_MS = 5000L;
+
+    // Point balances the client holds, so a planner can tell whether a reward is affordable.
+    private static final Object[][] POINT_VARBITS = {
+        {"slayer", VarbitID.SLAYER_POINTS},
+        {"tithe_farm", VarbitID.HOSIDIUS_TITHE_REWARDPOINTS},
+    };
+    private static final Object[][] POINT_VARPS = {
+        {"nightmare_zone", VarPlayerID.NZONE_REWARDPOINTS},
+        {"soul_wars_zeal_tokens", VarPlayerID.SOUL_WARS_ZEAL_TOKENS},
+        {"giants_foundry", VarPlayerID.GIANTS_FOUNDRY_REWARD_SHOP_POINTS},
+    };
+    // The daily claims RuneLite's Daily Task Indicators reads. 0 means today's claim is still waiting; herb boxes
+    // count the boxes bought today.
+    private static final Object[][] DAILY_VARBITS = {
+        {"zaff_battlestaves", VarbitID.ZAFF_LAST_CLAIMED},
+        {"ardougne_essence", VarbitID.ARDOUGNE_FREE_ESSENCE},
+        {"lundail_runes", VarbitID.LUNDAIL_LAST_CLAIMED},
+        {"bert_sand", VarbitID.YANILLE_SAND_CLAIMED},
+        {"seers_flax", VarbitID.SEERS_FREE_FLAX},
+        {"rantz_arrows", VarbitID.WESTERN_RANTZ_ARROWS},
+        {"robin_bonemeal_slime", VarbitID.MORYTANIA_SLIME_CLAIMED},
+        {"kourend_dynamite", VarbitID.KOUREND_FREE_DYNAMITE},
+        {"nmz_herb_boxes", VarbitID.NZONE_HERBBOXES_PURCHASED},
+    };
+    private static final int[][] RUNE_POUCH_VARBITS = {
+        {VarbitID.RUNE_POUCH_TYPE_1, VarbitID.RUNE_POUCH_QUANTITY_1},
+        {VarbitID.RUNE_POUCH_TYPE_2, VarbitID.RUNE_POUCH_QUANTITY_2},
+        {VarbitID.RUNE_POUCH_TYPE_3, VarbitID.RUNE_POUCH_QUANTITY_3},
+        {VarbitID.RUNE_POUCH_TYPE_4, VarbitID.RUNE_POUCH_QUANTITY_4},
+    };
+    // Collection log totals by tab, which the client knows without opening each page.
+    private static final Object[][] COLLECTION_COUNT_VARPS = {
+        {"total", VarPlayerID.COLLECTION_COUNT, VarPlayerID.COLLECTION_COUNT_MAX},
+        {"bosses", VarPlayerID.COLLECTION_COUNT_BOSSES, VarPlayerID.COLLECTION_COUNT_BOSSES_MAX},
+        {"raids", VarPlayerID.COLLECTION_COUNT_RAIDS, VarPlayerID.COLLECTION_COUNT_RAIDS_MAX},
+        {"clues", VarPlayerID.COLLECTION_COUNT_CLUES, VarPlayerID.COLLECTION_COUNT_CLUES_MAX},
+        {"minigames", VarPlayerID.COLLECTION_COUNT_MINIGAMES, VarPlayerID.COLLECTION_COUNT_MINIGAMES_MAX},
+        {"other", VarPlayerID.COLLECTION_COUNT_OTHER, VarPlayerID.COLLECTION_COUNT_OTHER_MAX},
+    };
+    // RuneLite's Chat Commands plugin keeps kill counts, personal bests and pets per account in these groups.
+    private static final String KILLCOUNT_GROUP = "killcount";
+    private static final String PERSONAL_BEST_GROUP = "personalbest";
+    private static final String CHAT_COMMANDS_GROUP = "chatcommands";
+    // RuneLite's Grand Exchange plugin logs each completed trade per account here, for up to a year.
+    private static final String GRAND_EXCHANGE_GROUP = "grandexchange";
+    private static final String TRADE_HISTORY_KEY = "tradeHistory";
+    private static final int SLAYER_BOSS_TASK = 98;
     private static final long OBSERVABILITY_WRITE_INTERVAL_MS = 1000L;
 
     // Achievement diary definitions: {name, easy_varbit, medium_varbit, hard_varbit, elite_varbit}
@@ -368,6 +432,12 @@ public class CharacterStateExporterPlugin extends Plugin
     @Inject
     private Gson gson;
 
+    @Inject
+    private OkHttpClient okHttpClient;
+
+    @Inject
+    private ConfigManager configManager;
+
     private final Map<String, AtomicLong> lastExportAt = new ConcurrentHashMap<>();
     private final Map<String, String> lastStablePayloadByFile = new ConcurrentHashMap<>();
     private final Map<String, Map<String, Object>> datasetStatus = new ConcurrentHashMap<>();
@@ -388,11 +458,13 @@ public class CharacterStateExporterPlugin extends Plugin
 
     private volatile ExecutorService writer;
     private volatile boolean pendingInitialCharacterExport;
+    private volatile boolean grandExchangeChanged;
     private volatile boolean writesEnabled;
     private volatile Path accountOutputDir;
     private volatile String currentAccountName;
     private CharacterStateExporterPanel panel;
     private NavigationButton navButton;
+    private SyncClient sync;
 
     @Provides
     CharacterStateExporterConfig provideConfig(ConfigManager configManager)
@@ -416,9 +488,10 @@ public class CharacterStateExporterPlugin extends Plugin
         );
         writesEnabled = initializeBaseOutputDirectory();
 
-        panel = new CharacterStateExporterPanel(this::manualExportAll);
+        panel = new CharacterStateExporterPanel(this::manualExportAll, () -> sync.pair(), () -> sync.revoke());
+        sync = createSyncClient();
         navButton = NavigationButton.builder()
-            .tooltip("Character Export")
+            .tooltip("OSRS Intelligence")
             .icon(createSidebarIcon())
             .priority(10)
             .panel(panel)
@@ -456,6 +529,8 @@ public class CharacterStateExporterPlugin extends Plugin
                 exportQuestSnapshot("startup");
                 exportDiarySnapshot("startup");
                 exportCombatAchievementSnapshot("startup");
+                exportAccountSnapshot("startup");
+                exportGrandExchangeSnapshot("startup");
             }
         });
     }
@@ -510,10 +585,13 @@ public class CharacterStateExporterPlugin extends Plugin
                 exportQuestSnapshot("game_state_changed");
                 exportDiarySnapshot("game_state_changed");
                 exportCombatAchievementSnapshot("game_state_changed");
+                exportAccountSnapshot("game_state_changed");
+                exportGrandExchangeSnapshot("game_state_changed");
             });
         }
         else if (gameState == GameState.LOGIN_SCREEN)
         {
+            sync.clearAccount();
             accountOutputDir = null;
             currentAccountName = null;
             combatTaskCache.clear();
@@ -528,9 +606,45 @@ public class CharacterStateExporterPlugin extends Plugin
     }
 
     @Subscribe
+    public void onConfigChanged(ConfigChanged event)
+    {
+        String group = event.getGroup();
+        if (GRAND_EXCHANGE_GROUP.equals(group) && TRADE_HISTORY_KEY.equals(event.getKey()))
+        {
+            grandExchangeChanged = true;
+            return;
+        }
+        if (KILLCOUNT_GROUP.equals(group) || PERSONAL_BEST_GROUP.equals(group) || CHAT_COMMANDS_GROUP.equals(group) && "pets2".equals(event.getKey()))
+        {
+            clientThread.invokeLater(() -> exportAccountSnapshot("chat_commands_changed", ACCOUNT_EXPORT_INTERVAL_MS));
+            return;
+        }
+        if (!"osrsIntelligence".equals(event.getGroup()) || !event.getKey().equals("syncEnabled") && !event.getKey().equals("syncEndpoint"))
+        {
+            return;
+        }
+        clientThread.invokeLater(() ->
+        {
+            Player player = client.getLocalPlayer();
+            if (config.syncEnabled() && player != null && player.getName() != null)
+            {
+                sync.setAccount(client.getAccountHash(), player.getName().trim());
+            }
+            sync.refresh();
+        });
+    }
+
+    @Subscribe
     public void onGameTick(GameTick event)
     {
         updateReadinessSnapshot();
+        sync.tick();
+
+        if (grandExchangeChanged)
+        {
+            grandExchangeChanged = false;
+            exportGrandExchangeSnapshot("offer_changed");
+        }
 
         if (currentAccountName == null)
         {
@@ -595,6 +709,15 @@ public class CharacterStateExporterPlugin extends Plugin
             }
         }
 
+        if (config.exportAccount())
+        {
+            AtomicLong lastRun = lastExportAt.get(ACCOUNT_FILE);
+            if (lastRun == null || System.currentTimeMillis() - lastRun.get() >= ACCOUNT_EXPORT_INTERVAL_MS)
+            {
+                anyExportNeeded = true;
+            }
+        }
+
         if (!anyExportNeeded)
         {
             return;
@@ -602,6 +725,7 @@ public class CharacterStateExporterPlugin extends Plugin
 
         clientThread.invokeLater(() ->
         {
+            exportAccountSnapshot("varbit_changed", ACCOUNT_EXPORT_INTERVAL_MS);
             exportQuestSnapshot("varbit_changed", QUEST_EXPORT_INTERVAL_MS);
             exportDiarySnapshot("varbit_changed", DIARY_EXPORT_INTERVAL_MS);
             exportCombatAchievementSnapshot("varbit_changed", COMBAT_ACHIEVEMENT_EXPORT_INTERVAL_MS);
@@ -641,14 +765,14 @@ public class CharacterStateExporterPlugin extends Plugin
     public void onCommandExecuted(CommandExecuted event)
     {
         String command = event.getCommand();
-        if (command == null || !command.equalsIgnoreCase("charexport"))
+        if (command == null || !command.equalsIgnoreCase("osrsintel"))
         {
             return;
         }
 
         String[] arguments = event.getArguments();
         String target = arguments.length > 0 ? arguments[0].toLowerCase() : "all";
-        debug("manual_command", "Received ::charexport target={}", target);
+        debug("manual_command", "Received ::osrsintel target={}", target);
         recordEvent("manual_command", "manual_command", ImmutableMap.of("target", target));
 
         ContainerKind kind = ContainerKind.fromCommand(target);
@@ -673,6 +797,13 @@ public class CharacterStateExporterPlugin extends Plugin
             case "combat_achievements":
                 clientThread.invokeLater(() -> exportCombatAchievementSnapshot("manual_command"));
                 return;
+            case "account":
+                clientThread.invokeLater(() -> exportAccountSnapshot("manual_command"));
+                return;
+            case "ge":
+            case "grand_exchange":
+                clientThread.invokeLater(() -> exportGrandExchangeSnapshot("manual_command"));
+                return;
             case "log":
             case "collection_log":
             case "collectionlog":
@@ -689,12 +820,22 @@ public class CharacterStateExporterPlugin extends Plugin
                     exportQuestSnapshot("manual_command");
                     exportDiarySnapshot("manual_command");
                     exportCombatAchievementSnapshot("manual_command");
+                    exportAccountSnapshot("manual_command");
+                    exportGrandExchangeSnapshot("manual_command");
                     writeCollectionLogSnapshot("manual_command");
                 });
                 return;
             default:
-                debug("manual_command", "Unknown ::charexport target={}", target);
+                debug("manual_command", "Unknown ::osrsintel target={}", target);
         }
+    }
+
+    @Subscribe
+    public void onGrandExchangeOfferChanged(GrandExchangeOfferChanged event)
+    {
+        // Offers arrive one slot at a time, all at once on login, so save once the burst is over rather than
+        // throttling, which would keep the first and drop the rest.
+        grandExchangeChanged = true;
     }
 
     @Subscribe
@@ -761,6 +902,10 @@ public class CharacterStateExporterPlugin extends Plugin
 
         accountOutputDir = dir;
         panel.setAccount(player.getName().trim(), dir);
+        if (config.syncEnabled())
+        {
+            sync.setAccount(client.getAccountHash(), player.getName().trim());
+        }
         panel.restoreFromDisk(dir);
         debug("account", "Resolved account directory for {}", name);
     }
@@ -834,6 +979,7 @@ public class CharacterStateExporterPlugin extends Plugin
         payload.put("world", client.getWorld());
         payload.put("game_state", gameState.name());
         payload.put("world_types", worldTypes());
+        payload.put("account_type", client.getVarbitValue(VarbitID.IRONMAN));
         payload.put("stats", buildStats());
 
         debug("character", "Prepared character export reason={} world={}", reason, client.getWorld());
@@ -1801,6 +1947,328 @@ public class CharacterStateExporterPlugin extends Plugin
         return text.replaceAll("<[^>]+>", "");
     }
 
+    private void exportAccountSnapshot(String reason)
+    {
+        exportAccountSnapshot(reason, 0L);
+    }
+
+    private void exportAccountSnapshot(String reason, long minimumIntervalMs)
+    {
+        boolean manualPanelRequest = isManualPanelReason(reason);
+        GameState gameState = client.getGameState();
+        if (!config.exportAccount() || gameState != GameState.LOGGED_IN)
+        {
+            updateDatasetStatus("account", "skipped", "not_logged_in_or_disabled", ImmutableMap.of(
+                "reason", reason, "enabled", config.exportAccount(), "game_state", gameState.name()
+            ));
+            if (manualPanelRequest)
+            {
+                panel.markUnavailable("account", config.exportAccount() ? "Not ready" : "Disabled",
+                    config.exportAccount() ? "Account details are only available while logged in." : "This dataset is disabled in plugin settings.");
+            }
+            requestObservabilityWrite(false);
+            return;
+        }
+
+        if (!acquireExportSlot(ACCOUNT_FILE, minimumIntervalMs))
+        {
+            if (manualPanelRequest)
+            {
+                panel.markChecked("account");
+            }
+            return;
+        }
+
+        Player player = client.getLocalPlayer();
+        Map<String, Object> payload = basePayload(reason);
+        payload.put("quest_points", client.getVarpValue(VarPlayerID.QP));
+        payload.put("combat_level", player != null ? player.getCombatLevel() : null);
+        payload.put("account_type", client.getVarbitValue(VarbitID.IRONMAN));
+        payload.put("spellbook", client.getVarbitValue(VarbitID.SPELLBOOK));
+        payload.put("house_location", client.getVarbitValue(VarbitID.POH_HOUSE_LOCATION));
+        payload.put("prayers_unlocked", ImmutableMap.of(
+            "rigour", client.getVarbitValue(VarbitID.PRAYER_RIGOUR_UNLOCKED) == 1,
+            "augury", client.getVarbitValue(VarbitID.PRAYER_AUGURY_UNLOCKED) == 1,
+            "preserve", client.getVarbitValue(VarbitID.PRAYER_PRESERVE_UNLOCKED) == 1
+        ));
+
+        Map<String, Object> points = new LinkedHashMap<>();
+        for (Object[] row : POINT_VARBITS)
+        {
+            points.put((String) row[0], client.getVarbitValue((int) row[1]));
+        }
+        for (Object[] row : POINT_VARPS)
+        {
+            points.put((String) row[0], client.getVarpValue((int) row[1]));
+        }
+        payload.put("points", points);
+        payload.put("slayer", slayerSnapshot());
+        payload.put("kingdom", ImmutableMap.of(
+            "started", client.getVarpValue(VarPlayerID.MISC_QUEST) > 0,
+            "approval", client.getVarbitValue(VarbitID.MISC_APPROVAL),
+            "coffer", client.getVarbitValue(VarbitID.MISC_COFFERS)
+        ));
+
+        Map<String, Object> dailies = new LinkedHashMap<>();
+        for (Object[] row : DAILY_VARBITS)
+        {
+            dailies.put((String) row[0], client.getVarbitValue((int) row[1]));
+        }
+        payload.put("dailies", dailies);
+        payload.put("rune_pouch", runePouchSnapshot());
+
+        Map<String, Object> log = new LinkedHashMap<>();
+        for (Object[] row : COLLECTION_COUNT_VARPS)
+        {
+            log.put((String) row[0], ImmutableMap.of("obtained", client.getVarpValue((int) row[1]), "total", client.getVarpValue((int) row[2])));
+        }
+        payload.put("collection_log_counts", log);
+        payload.put("kill_counts", profileNumbers(KILLCOUNT_GROUP));
+        payload.put("personal_bests_seconds", profileNumbers(PERSONAL_BEST_GROUP));
+        payload.put("pets", petSnapshot());
+
+        updateDatasetStatus("account", "prepared", "ready_to_write", ImmutableMap.of("reason", reason));
+        writeJson("account", ACCOUNT_FILE, payload);
+    }
+
+    /** The current Slayer assignment, named the way the Slayer plugin names it. */
+    private Map<String, Object> slayerSnapshot()
+    {
+        Map<String, Object> slayer = new LinkedHashMap<>();
+        slayer.put("master", client.getVarbitValue(VarbitID.SLAYER_MASTER));
+        slayer.put("streak", client.getVarbitValue(VarbitID.SLAYER_TASKS_COMPLETED));
+        slayer.put("wilderness_streak", client.getVarbitValue(VarbitID.SLAYER_WILDERNESS_TASKS_COMPLETED));
+        int remaining = client.getVarpValue(VarPlayerID.SLAYER_COUNT);
+        slayer.put("remaining", remaining);
+        if (remaining <= 0)
+        {
+            return slayer;
+        }
+        slayer.put("assigned", client.getVarpValue(VarPlayerID.SLAYER_COUNT_ORIGINAL));
+        try
+        {
+            int taskId = client.getVarpValue(VarPlayerID.SLAYER_TARGET);
+            List<Integer> rows;
+            Integer taskRow = null;
+            if (taskId == SLAYER_BOSS_TASK)
+            {
+                rows = client.getDBRowsByValue(DBTableID.SlayerTaskSublist.ID, DBTableID.SlayerTaskSublist.COL_TASK_SUBTABLE_ID, 0,
+                    client.getVarbitValue(VarbitID.SLAYER_TARGET_BOSSID));
+                if (!rows.isEmpty())
+                {
+                    taskRow = (Integer) client.getDBTableField(rows.get(0), DBTableID.SlayerTaskSublist.COL_TASK, 0)[0];
+                }
+            }
+            else
+            {
+                rows = client.getDBRowsByValue(DBTableID.SlayerTask.ID, DBTableID.SlayerTask.COL_ID, 0, taskId);
+                if (!rows.isEmpty())
+                {
+                    taskRow = rows.get(0);
+                }
+            }
+            if (taskRow != null)
+            {
+                slayer.put("task", client.getDBTableField(taskRow, DBTableID.SlayerTask.COL_NAME_UPPERCASE, 0)[0]);
+            }
+            int areaId = client.getVarpValue(VarPlayerID.SLAYER_AREA);
+            if (areaId > 0)
+            {
+                List<Integer> areas = client.getDBRowsByValue(DBTableID.SlayerArea.ID, DBTableID.SlayerArea.COL_AREA_ID, 0, areaId);
+                if (!areas.isEmpty())
+                {
+                    slayer.put("area", client.getDBTableField(areas.get(0), DBTableID.SlayerArea.COL_AREA_NAME_IN_HELPER, 0)[0]);
+                }
+            }
+        }
+        catch (RuntimeException ex)
+        {
+            debug("account", "Could not resolve the Slayer task: {}", ex.toString());
+        }
+        return slayer;
+    }
+
+    private List<Map<String, Object>> runePouchSnapshot()
+    {
+        List<Map<String, Object>> runes = new ArrayList<>();
+        for (int[] slot : RUNE_POUCH_VARBITS)
+        {
+            int type = client.getVarbitValue(slot[0]);
+            int quantity = client.getVarbitValue(slot[1]);
+            if (type <= 0 || quantity <= 0)
+            {
+                continue;
+            }
+            int itemId = client.getEnum(EnumID.RUNEPOUCH_RUNE).getIntValue(type);
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("id", itemId);
+            row.put("name", safeItemName(itemId));
+            row.put("quantity", quantity);
+            runes.add(row);
+        }
+        return runes;
+    }
+
+    /** Whole-number values the Chat Commands plugin stored for this account, such as kill counts. */
+    private Map<String, Object> profileNumbers(String group)
+    {
+        Map<String, Object> values = new LinkedHashMap<>();
+        String profile = configManager.getRSProfileKey();
+        if (profile == null)
+        {
+            return values;
+        }
+        List<String> keys = new ArrayList<>(configManager.getRSProfileConfigurationKeys(group, profile, ""));
+        Collections.sort(keys);
+        for (String key : keys)
+        {
+            String raw = configManager.getRSProfileConfiguration(group, key);
+            try
+            {
+                double value = Double.parseDouble(raw);
+                values.put(key, value == Math.rint(value) ? (Object) (long) value : (Object) value);
+            }
+            catch (NumberFormatException | NullPointerException ignored)
+            {
+                // not a number; skip it
+            }
+        }
+        return values;
+    }
+
+    private List<Map<String, Object>> petSnapshot()
+    {
+        List<Map<String, Object>> pets = new ArrayList<>();
+        String raw = configManager.getRSProfileConfiguration(CHAT_COMMANDS_GROUP, "pets2");
+        if (raw == null)
+        {
+            return pets;
+        }
+        try
+        {
+            int[] ids = gson.fromJson(raw, int[].class);
+            for (int id : ids == null ? new int[0] : ids)
+            {
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("id", id);
+                row.put("name", safeItemName(id));
+                pets.add(row);
+            }
+        }
+        catch (RuntimeException ex)
+        {
+            debug("account", "Could not read the pet list: {}", ex.toString());
+        }
+        return pets;
+    }
+
+    /** Completed trades from RuneLite's Grand Exchange plugin, oldest first. Each price is the average paid or received. */
+    private List<Map<String, Object>> tradeHistorySnapshot()
+    {
+        List<Map<String, Object>> trades = new ArrayList<>();
+        String raw = configManager.getRSProfileConfiguration(GRAND_EXCHANGE_GROUP, TRADE_HISTORY_KEY);
+        if (raw == null)
+        {
+            return trades;
+        }
+        try
+        {
+            JsonArray list = gson.fromJson(raw, JsonArray.class);
+            for (JsonElement element : list == null ? new JsonArray() : list)
+            {
+                JsonObject t = element.getAsJsonObject();
+                if (!t.has("i") || !t.has("q") || !t.has("p") || !t.has("t"))
+                {
+                    continue;
+                }
+                int itemId = t.get("i").getAsInt();
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("buy", t.has("b") && t.get("b").getAsBoolean());
+                row.put("id", itemId);
+                row.put("name", safeItemName(itemId));
+                row.put("quantity", t.get("q").getAsInt());
+                row.put("price", t.get("p").getAsLong());
+                row.put("time", tradeTime(t.get("t")));
+                trades.add(row);
+            }
+        }
+        catch (RuntimeException ex)
+        {
+            debug("grand_exchange", "Could not read the trade history: {}", ex.toString());
+        }
+        return trades;
+    }
+
+    /** RuneLite writes times as epoch milliseconds; older entries are {seconds, nanos}. */
+    static String tradeTime(JsonElement t)
+    {
+        java.time.Instant at = t.isJsonObject()
+            ? java.time.Instant.ofEpochSecond(t.getAsJsonObject().get("seconds").getAsLong(), t.getAsJsonObject().has("nanos") ? t.getAsJsonObject().get("nanos").getAsLong() : 0L)
+            : java.time.Instant.ofEpochMilli(t.getAsLong());
+        return at.toString();
+    }
+
+    private void exportGrandExchangeSnapshot(String reason)
+    {
+        exportGrandExchangeSnapshot(reason, 0L);
+    }
+
+    private void exportGrandExchangeSnapshot(String reason, long minimumIntervalMs)
+    {
+        boolean manualPanelRequest = isManualPanelReason(reason);
+        GameState gameState = client.getGameState();
+        if (!config.exportGrandExchange() || gameState != GameState.LOGGED_IN)
+        {
+            updateDatasetStatus("grand_exchange", "skipped", "not_logged_in_or_disabled", ImmutableMap.of(
+                "reason", reason, "enabled", config.exportGrandExchange(), "game_state", gameState.name()
+            ));
+            if (manualPanelRequest)
+            {
+                panel.markUnavailable("grand_exchange", config.exportGrandExchange() ? "Not ready" : "Disabled",
+                    config.exportGrandExchange() ? "Offers are only available while logged in." : "This dataset is disabled in plugin settings.");
+            }
+            requestObservabilityWrite(false);
+            return;
+        }
+
+        if (!acquireExportSlot(GRAND_EXCHANGE_FILE, minimumIntervalMs))
+        {
+            if (manualPanelRequest)
+            {
+                panel.markChecked("grand_exchange");
+            }
+            return;
+        }
+
+        List<Map<String, Object>> offers = new ArrayList<>();
+        GrandExchangeOffer[] slots = client.getGrandExchangeOffers();
+        for (int slot = 0; slots != null && slot < slots.length; slot++)
+        {
+            GrandExchangeOffer offer = slots[slot];
+            if (offer == null || offer.getState() == GrandExchangeOfferState.EMPTY || offer.getItemId() <= 0)
+            {
+                continue;
+            }
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("slot", slot);
+            row.put("state", offer.getState().name());
+            row.put("id", offer.getItemId());
+            row.put("name", safeItemName(offer.getItemId()));
+            row.put("price", offer.getPrice());
+            row.put("quantity", offer.getTotalQuantity());
+            row.put("traded", offer.getQuantitySold());
+            row.put("spent", offer.getSpent());
+            offers.add(row);
+        }
+
+        List<Map<String, Object>> history = tradeHistorySnapshot();
+        Map<String, Object> payload = basePayload(reason);
+        payload.put("offers", offers);
+        payload.put("history", history);
+        updateDatasetStatus("grand_exchange", "prepared", "ready_to_write", ImmutableMap.of("reason", reason, "offers", offers.size()));
+        writeJson("grand_exchange", GRAND_EXCHANGE_FILE, payload);
+    }
+
     private void exportContainerSnapshot(ContainerKind kind, String reason)
     {
         exportContainerSnapshot(kind, reason, CONTAINER_EXPORT_INTERVAL_MS);
@@ -2002,6 +2470,51 @@ public class CharacterStateExporterPlugin extends Plugin
         return true;
     }
 
+    private SyncClient createSyncClient()
+    {
+        SyncClient.SecretStore store = new SyncClient.SecretStore()
+        {
+            @Override
+            public String get(String key)
+            {
+                return configManager.getConfiguration("osrsIntelligence", key);
+            }
+
+            @Override
+            public void set(String key, String value)
+            {
+                configManager.setConfiguration("osrsIntelligence", key, value);
+            }
+
+            @Override
+            public void unset(String key)
+            {
+                configManager.unsetConfiguration("osrsIntelligence", key);
+            }
+        };
+        SyncClient.Listener listener = new SyncClient.Listener()
+        {
+            @Override
+            public void onSyncState(SyncClient.State state, String detail)
+            {
+                panel.setSyncState(state, detail);
+            }
+
+            @Override
+            public void openApproval(String url)
+            {
+                LinkBrowser.browse(url);
+            }
+
+            @Override
+            public void onPaired()
+            {
+                clientThread.invokeLater(() -> manualExportAll());
+            }
+        };
+        return new SyncClient(okHttpClient, gson, store, listener, () -> config.syncEnabled() ? config.syncEndpoint() : null, false);
+    }
+
     private void writeJson(String datasetKey, String fileName, Map<String, Object> payload)
     {
         Path outputDir = accountOutputDir;
@@ -2031,6 +2544,11 @@ public class CharacterStateExporterPlugin extends Plugin
                 if (stableJson.equals(previousStable))
                 {
                     debug("writer", "Skipped write for {} because stable payload is unchanged", outputPath);
+                    // Unchanged on disk, but a link made after it was written still needs a first copy.
+                    if (config.syncEnabled() && !sync.has(datasetKey))
+                    {
+                        sync.offer(datasetKey, json);
+                    }
                     updateDatasetStatus(datasetKey, "unchanged", "stable_payload_unchanged", ImmutableMap.of(
                         "file", fileName
                     ));
@@ -2045,6 +2563,10 @@ public class CharacterStateExporterPlugin extends Plugin
                 writeTextFileSync(outputPath, json + System.lineSeparator());
                 lastStablePayloadByFile.put(fileName, stableJson);
                 warnedFailureKeys.remove("write:" + fileName);
+                if (config.syncEnabled())
+                {
+                    sync.offer(datasetKey, json);
+                }
 
                 debug("writer", "Wrote export file {}", outputPath);
                 updateDatasetStatus(datasetKey, "success", "write_complete", ImmutableMap.of(
@@ -2103,6 +2625,8 @@ public class CharacterStateExporterPlugin extends Plugin
             exportQuestSnapshot("manual_panel");
             exportDiarySnapshot("manual_panel");
             exportCombatAchievementSnapshot("manual_panel");
+            exportAccountSnapshot("manual_panel");
+            exportGrandExchangeSnapshot("manual_panel");
         });
     }
 
@@ -2118,6 +2642,8 @@ public class CharacterStateExporterPlugin extends Plugin
                 return "Inventory data is not available yet. Try again in a moment.";
             case EQUIPMENT:
                 return "Equipment data is not available yet. Try again in a moment.";
+            case LOOTING_BAG:
+                return "Check your looting bag first to refresh this file.";
             default:
                 return "This data is not available right now.";
         }
@@ -2521,7 +3047,8 @@ public class CharacterStateExporterPlugin extends Plugin
         BANK("bank", "bank.json", InventoryID.BANK, CONTAINER_EXPORT_INTERVAL_MS),
         SEED_VAULT("seed_vault", "seed_vault.json", InventoryID.SEED_VAULT, CONTAINER_EXPORT_INTERVAL_MS),
         INVENTORY("inventory", "inventory.json", InventoryID.INV, INVENTORY_EXPORT_INTERVAL_MS),
-        EQUIPMENT("equipment", "equipment.json", InventoryID.WORN, CONTAINER_EXPORT_INTERVAL_MS);
+        EQUIPMENT("equipment", "equipment.json", InventoryID.WORN, CONTAINER_EXPORT_INTERVAL_MS),
+        LOOTING_BAG("looting_bag", "looting_bag.json", InventoryID.LOOTING_BAG, CONTAINER_EXPORT_INTERVAL_MS);
 
         private final String datasetKey;
         private final String fileName;
@@ -2568,6 +3095,8 @@ public class CharacterStateExporterPlugin extends Plugin
                     return config.exportInventory();
                 case EQUIPMENT:
                     return config.exportEquipment();
+                case LOOTING_BAG:
+                    return config.exportLootingBag();
                 default:
                     return false;
             }
@@ -2589,6 +3118,9 @@ public class CharacterStateExporterPlugin extends Plugin
                 case "equipment":
                 case "gear":
                     return EQUIPMENT;
+                case "lootingbag":
+                case "looting_bag":
+                    return LOOTING_BAG;
                 default:
                     return null;
             }

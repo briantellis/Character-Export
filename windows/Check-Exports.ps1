@@ -1,8 +1,8 @@
 # Check-Exports.ps1
-# Lists the current contents of the character-exporter output directory.
+# Lists the current contents of the osrs-intelligence output directory.
 # Run this to verify export files are being written after a dev session.
 
-$exportDir = "$env:USERPROFILE\.runelite\character-exporter"
+$exportDir = "$env:USERPROFILE\.runelite\osrs-intelligence"
 
 if (-not (Test-Path $exportDir))
 {

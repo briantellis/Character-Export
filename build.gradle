@@ -14,7 +14,7 @@ repositories {
 // alongside hub resubmissions so reviewers can reproduce the build.
 def runeLiteVersion = 'latest.release'
 def lombokVersion = '1.18.30'
-def pluginMainClass = 'com.dzwnk.exporter.CharacterStateExporterPluginTest'
+def pluginMainClass = 'com.briantellis.osrsintelligence.CharacterStateExporterPluginTest'
 
 dependencies {
     compileOnly group: 'net.runelite', name: 'client', version: runeLiteVersion
@@ -26,8 +26,8 @@ dependencies {
     testImplementation group: 'net.runelite', name: 'jshell', version: runeLiteVersion
 }
 
-group = 'com.dzwnk'
-version = '0.6.0'
+group = 'com.briantellis'
+version = '1.0.0'
 
 java {
     sourceCompatibility = JavaVersion.VERSION_11

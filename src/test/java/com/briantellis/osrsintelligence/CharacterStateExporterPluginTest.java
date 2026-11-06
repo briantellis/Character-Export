@@ -1,4 +1,4 @@
-package com.dzwnk.exporter;
+package com.briantellis.osrsintelligence;
 
 import net.runelite.client.RuneLite;
 import net.runelite.client.externalplugins.ExternalPluginManager;

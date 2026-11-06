@@ -23,7 +23,7 @@
  * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
  * POSSIBILITY OF SUCH DAMAGE.
  */
-package com.dzwnk.exporter;
+package com.briantellis.osrsintelligence;
 
 import java.awt.BorderLayout;
 import java.awt.Color;
@@ -46,6 +46,7 @@ import javax.swing.DefaultListCellRenderer;
 import javax.swing.JButton;
 import javax.swing.JComboBox;
 import javax.swing.JLabel;
+import javax.swing.JOptionPane;
 import javax.swing.JList;
 import javax.swing.JPanel;
 import javax.swing.SwingUtilities;
@@ -63,20 +64,24 @@ class CharacterStateExporterPanel extends PluginPanel
     private static final int BUTTON_WIDTH = 170;
     private static final String[] DATASET_FILES = {
         "bank.json", "character.json", "diaries.json", "quests.json",
-        "inventory.json", "equipment.json", "seed_vault.json", "combat_achievements.json", "collection_log.json"
+        "inventory.json", "equipment.json", "seed_vault.json", "combat_achievements.json", "collection_log.json",
+        "account.json", "grand_exchange.json", "looting_bag.json"
     };
 
     static final String[] DATASET_KEYS = {
         "bank", "character", "diaries", "quests",
-        "inventory", "equipment", "seed_vault", "combat_achievements", "collection_log"
+        "inventory", "equipment", "seed_vault", "combat_achievements", "collection_log",
+        "account", "grand_exchange", "looting_bag"
     };
     private static final String[] DATASET_LABELS = {
         "Bank", "Stats", "Diaries", "Quests",
-        "Inventory", "Equipment", "Seed Vault", "Combat Tasks", "Collection Log"
+        "Inventory", "Equipment", "Seed Vault", "Combat Tasks", "Collection Log",
+        "Account", "Grand Exchange", "Looting Bag"
     };
     private static final String[] DATASET_HINTS = {
         "Log in", "Log in", "Log in", "Log in",
-        "Log in", "Log in", "Log in", "Log in", "Log in"
+        "Log in", "Log in", "Log in", "Log in", "Log in",
+        "Log in", "Log in", "Log in"
     };
     private static final String[] DATASET_READY_HINTS = {
         "Open bank",
@@ -87,7 +92,10 @@ class CharacterStateExporterPanel extends PluginPanel
         "Sync or change gear",
         "Open vault",
         "Sync or complete task",
-        "Open log"
+        "Open log",
+        "Sync or play",
+        "Sync or trade",
+        "Check bag"
     };
 
     enum SyncOutcome
@@ -121,7 +129,11 @@ class CharacterStateExporterPanel extends PluginPanel
     private final Map<String, SyncOutcome> manualSyncOutcomes = new LinkedHashMap<>();
     private boolean dropdownRebuilding;
 
-    CharacterStateExporterPanel(Runnable exportAllAction)
+    private final JLabel syncLabel = new JLabel("Sync is off");
+    private final JButton linkButton = new JButton("Link this character");
+    private final JButton revokeButton = new JButton("Revoke link");
+
+    CharacterStateExporterPanel(Runnable exportAllAction, Runnable linkAction, Runnable revokeAction)
     {
         super(false);
         setLayout(new BoxLayout(this, BoxLayout.Y_AXIS));
@@ -135,6 +147,25 @@ class CharacterStateExporterPanel extends PluginPanel
         accountLabel.setAlignmentX(CENTER_ALIGNMENT);
         accountLabel.setMaximumSize(new Dimension(Integer.MAX_VALUE, accountLabel.getPreferredSize().height + 4));
         add(accountLabel);
+
+        // Server sync
+        syncLabel.setForeground(ColorScheme.LIGHT_GRAY_COLOR);
+        syncLabel.setAlignmentX(CENTER_ALIGNMENT);
+        add(syncLabel);
+        linkButton.setAlignmentX(CENTER_ALIGNMENT);
+        linkButton.addActionListener(e -> linkAction.run());
+        linkButton.setEnabled(false);
+        add(linkButton);
+        revokeButton.setAlignmentX(CENTER_ALIGNMENT);
+        revokeButton.setVisible(false);
+        revokeButton.addActionListener(e ->
+        {
+            if (JOptionPane.showConfirmDialog(this, "Revoke this link? It can't be used again.", "Revoke link", JOptionPane.YES_NO_OPTION) == JOptionPane.YES_OPTION)
+            {
+                revokeAction.run();
+            }
+        });
+        add(revokeButton);
 
         // Status header
         JLabel statusHeader = new JLabel("Export Status");
@@ -252,7 +283,7 @@ class CharacterStateExporterPanel extends PluginPanel
         dirTitle.setForeground(ColorScheme.LIGHT_GRAY_COLOR);
         dirPanel.add(dirTitle, BorderLayout.NORTH);
 
-        directoryLabel = new JLabel("character-exporter/");
+        directoryLabel = new JLabel("osrs-intelligence/");
         directoryLabel.setHorizontalAlignment(JLabel.CENTER);
         directoryLabel.setForeground(Color.WHITE);
         directoryLabel.setBorder(new EmptyBorder(4, 0, 0, 0));
@@ -302,7 +333,7 @@ class CharacterStateExporterPanel extends PluginPanel
         {
             accountLabel.setText(playerName);
             accountLabel.setForeground(Color.WHITE);
-            directoryLabel.setText("character-exporter/" + playerName + "/");
+            directoryLabel.setText("osrs-intelligence/" + playerName + "/");
             for (int i = 0; i < DATASET_KEYS.length; i++)
             {
                 StatusRow row = statusRows.get(DATASET_KEYS[i]);
@@ -320,6 +351,18 @@ class CharacterStateExporterPanel extends PluginPanel
         });
     }
 
+    void setSyncState(SyncClient.State state, String detail)
+    {
+        SwingUtilities.invokeLater(() ->
+        {
+            syncLabel.setText("Sync: " + detail);
+            linkButton.setEnabled(state == SyncClient.State.NOT_PAIRED || state == SyncClient.State.ERROR);
+            revokeButton.setVisible(state == SyncClient.State.ACTIVE || state == SyncClient.State.PENDING);
+            revalidate();
+            repaint();
+        });
+    }
+
     void clearAccount()
     {
         currentOutputDir = null;
@@ -327,7 +370,7 @@ class CharacterStateExporterPanel extends PluginPanel
         {
             accountLabel.setText("Not logged in");
             accountLabel.setForeground(ColorScheme.LIGHT_GRAY_COLOR);
-            directoryLabel.setText("character-exporter/");
+            directoryLabel.setText("osrs-intelligence/");
             synchronized (manualSyncLock)
             {
                 manualSyncInProgress = false;
