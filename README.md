@@ -61,7 +61,7 @@ A server that wants to receive data implements these routes. Each takes and retu
 - The account and its output folder
 - Each dataset's last save, or what to do to fill it
 - **Sync Available** saves everything the client has in memory now
-- **Open Folder** and **Open File** open the exports
+- **Copy Folder Path** copies the export folder's location, to paste into your file browser
 - Link status, **Link this character** and **Revoke link**
 
 ## Debug logging

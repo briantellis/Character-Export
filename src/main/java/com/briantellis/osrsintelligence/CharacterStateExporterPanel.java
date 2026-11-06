@@ -27,10 +27,10 @@ package com.briantellis.osrsintelligence;
 
 import java.awt.BorderLayout;
 import java.awt.Color;
-import java.awt.Component;
-import java.awt.Desktop;
 import java.awt.Dimension;
 import java.io.IOException;
+import java.awt.Toolkit;
+import java.awt.datatransfer.StringSelection;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
@@ -42,15 +42,12 @@ import java.util.Map;
 import javax.swing.BorderFactory;
 import javax.swing.Box;
 import javax.swing.BoxLayout;
-import javax.swing.DefaultListCellRenderer;
 import javax.swing.JButton;
-import javax.swing.JComboBox;
 import javax.swing.JLabel;
 import javax.swing.JOptionPane;
-import javax.swing.JList;
 import javax.swing.JPanel;
 import javax.swing.SwingUtilities;
-import javax.swing.UIManager;
+import javax.swing.Timer;
 import javax.swing.border.EmptyBorder;
 import lombok.extern.slf4j.Slf4j;
 import net.runelite.client.ui.ColorScheme;
@@ -122,12 +119,10 @@ class CharacterStateExporterPanel extends PluginPanel
     private final Map<String, String> datasetFiles = new LinkedHashMap<>();
     private final JLabel directoryLabel;
     private final JLabel accountLabel;
-    private final JComboBox<String> openFileDropdown;
     private volatile Path currentOutputDir;
     private final Object manualSyncLock = new Object();
     private boolean manualSyncInProgress;
     private final Map<String, SyncOutcome> manualSyncOutcomes = new LinkedHashMap<>();
-    private boolean dropdownRebuilding;
 
     private final JLabel syncLabel = new JLabel("Sync is off");
     private final JButton linkButton = new JButton("Link this character");
@@ -233,40 +228,10 @@ class CharacterStateExporterPanel extends PluginPanel
 
         add(Box.createRigidArea(new Dimension(0, 6)));
 
-        JButton openFolderButton = createCenteredButton("Open Folder");
-        openFolderButton.addActionListener(e -> openOutputFolder());
-        add(openFolderButton);
-
-        add(Box.createRigidArea(new Dimension(0, 6)));
-
-        JLabel openFileLabel = new JLabel("Open File");
-        openFileLabel.setHorizontalAlignment(JLabel.CENTER);
-        openFileLabel.setForeground(ColorScheme.LIGHT_GRAY_COLOR);
-        openFileLabel.setAlignmentX(CENTER_ALIGNMENT);
-        openFileLabel.setMaximumSize(new Dimension(Integer.MAX_VALUE, openFileLabel.getPreferredSize().height + 2));
-        add(openFileLabel);
-        add(Box.createRigidArea(new Dimension(0, 4)));
-
-        openFileDropdown = new JComboBox<>();
-        openFileDropdown.setAlignmentX(CENTER_ALIGNMENT);
-        openFileDropdown.setFont(UIManager.getFont("Button.font"));
-        openFileDropdown.setRenderer(new DefaultListCellRenderer()
-        {
-            @Override
-            public Component getListCellRendererComponent(JList<?> list, Object value, int index, boolean isSelected, boolean cellHasFocus)
-            {
-                JLabel label = (JLabel) super.getListCellRendererComponent(list, value, index, isSelected, cellHasFocus);
-                label.setHorizontalAlignment(JLabel.CENTER);
-                return label;
-            }
-        });
-        Dimension dropdownSize = new Dimension(BUTTON_WIDTH, 30);
-        openFileDropdown.setPreferredSize(dropdownSize);
-        openFileDropdown.setMinimumSize(dropdownSize);
-        openFileDropdown.setMaximumSize(dropdownSize);
-        openFileDropdown.addActionListener(e -> handleOpenFileSelection());
-        add(openFileDropdown);
-        rebuildOpenFileDropdown();
+        // Plugins can't open folders, so the path goes to the clipboard for pasting into a file browser.
+        JButton copyFolderButton = createCenteredButton("Copy Folder Path");
+        copyFolderButton.addActionListener(e -> copyOutputFolder(copyFolderButton));
+        add(copyFolderButton);
 
         add(Box.createRigidArea(new Dimension(0, 12)));
 
@@ -347,7 +312,6 @@ class CharacterStateExporterPanel extends PluginPanel
                     row.detailLabel.setToolTipText(null);
                 }
             }
-            rebuildOpenFileDropdown();
         });
     }
 
@@ -388,7 +352,6 @@ class CharacterStateExporterPanel extends PluginPanel
                     row.detailLabel.setForeground(ColorScheme.LIGHT_GRAY_COLOR);
                 }
             }
-            rebuildOpenFileDropdown();
         });
     }
 
@@ -409,7 +372,6 @@ class CharacterStateExporterPanel extends PluginPanel
         SwingUtilities.invokeLater(() ->
         {
             setRowState(datasetKey, time, "Updated", Color.GREEN, tooltip);
-            rebuildOpenFileDropdown();
         });
         recordManualOutcome(datasetKey, SyncOutcome.UPDATED);
     }
@@ -503,7 +465,6 @@ class CharacterStateExporterPanel extends PluginPanel
                 {
                 }
             }
-            rebuildOpenFileDropdown();
         });
     }
 
@@ -570,95 +531,17 @@ class CharacterStateExporterPanel extends PluginPanel
         return prefix + " " + localTime.format(DATE_TIME_FMT);
     }
 
-    private void rebuildOpenFileDropdown()
-    {
-        if (openFileDropdown == null)
-        {
-            return;
-        }
-
-        dropdownRebuilding = true;
-        openFileDropdown.removeAllItems();
-
-        Path dir = currentOutputDir;
-        for (int i = 0; i < DATASET_KEYS.length; i++)
-        {
-            String datasetKey = DATASET_KEYS[i];
-            String fileName = datasetFiles.get(datasetKey);
-            if (dir != null && fileName != null && Files.exists(dir.resolve(fileName)))
-            {
-                openFileDropdown.addItem(DATASET_LABELS[i]);
-            }
-        }
-
-        openFileDropdown.setEnabled(openFileDropdown.getItemCount() > 0);
-        dropdownRebuilding = false;
-    }
-
-    private void openOutputFolder()
+    private void copyOutputFolder(JButton button)
     {
         Path dir = currentOutputDir;
-        if (dir == null || !Files.isDirectory(dir))
+        if (dir == null)
         {
             return;
         }
-
-        try
-        {
-            Desktop.getDesktop().open(dir.toFile());
-        }
-        catch (IOException | UnsupportedOperationException ex)
-        {
-            log.debug("Could not open output folder: {}", ex.toString());
-        }
-    }
-
-    private void openDatasetFile(String datasetKey)
-    {
-        Path dir = currentOutputDir;
-        String fileName = datasetFiles.get(datasetKey);
-        if (dir == null || fileName == null)
-        {
-            return;
-        }
-
-        Path file = dir.resolve(fileName);
-        if (!Files.isRegularFile(file))
-        {
-            return;
-        }
-
-        try
-        {
-            Desktop.getDesktop().open(file.toFile());
-        }
-        catch (IOException | UnsupportedOperationException ex)
-        {
-            log.debug("Could not open dataset file {}: {}", file, ex.toString());
-        }
-    }
-
-    private void handleOpenFileSelection()
-    {
-        if (dropdownRebuilding)
-        {
-            return;
-        }
-
-        Object selected = openFileDropdown.getSelectedItem();
-        if (!(selected instanceof String))
-        {
-            return;
-        }
-
-        String label = (String) selected;
-        for (int i = 0; i < DATASET_LABELS.length; i++)
-        {
-            if (DATASET_LABELS[i].equals(label))
-            {
-                openDatasetFile(DATASET_KEYS[i]);
-                break;
-            }
-        }
+        Toolkit.getDefaultToolkit().getSystemClipboard().setContents(new StringSelection(dir.toString()), null);
+        button.setText("Copied");
+        Timer reset = new Timer(1500, e -> button.setText("Copy Folder Path"));
+        reset.setRepeats(false);
+        reset.start();
     }
 }
