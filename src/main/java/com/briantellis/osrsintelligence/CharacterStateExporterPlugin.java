@@ -39,7 +39,6 @@ import java.awt.RenderingHints;
 import java.awt.image.BufferedImage;
 import java.io.IOException;
 import java.nio.file.StandardOpenOption;
-import com.google.common.io.CharStreams;
 import net.runelite.client.util.Filepath;
 import net.runelite.client.util.ImageUtil;
 import java.time.OffsetDateTime;
@@ -1893,13 +1892,13 @@ public class CharacterStateExporterPlugin extends Plugin
 
         try
         {
-            String content;
-            try (java.io.Reader reader = file.openReader())
+            Map<String, Object> saved;
+            try (var reader = file.openReader())
             {
-                content = CharStreams.toString(reader);
+                @SuppressWarnings("unchecked")
+                Map<String, Object> read = gson.fromJson(reader, Map.class);
+                saved = read;
             }
-            @SuppressWarnings("unchecked")
-            Map<String, Object> saved = gson.fromJson(content, Map.class);
             if (saved == null)
             {
                 return;
